@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-development-pipeline"
+version = "1.0.0"
+description = "AI Development Pipeline - AIエージェント自律開発パイプライン"
+requires-python = ">=3.13"
+
+[tool.black]
+line-length = 125
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 125
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+# UP042/UP040/UP046: StrEnum/type文/genericクラスへの書き換え提案。
+# `class X(str, Enum)` 等の明示的な形は設計書のコーディング規約に反せず、
+# 22モジュール横断で機械的に書き換えるリスクの方が大きいため許容する。
+ignore = ["UP042", "UP040", "UP046"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

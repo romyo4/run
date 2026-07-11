@@ -1,0 +1,21 @@
+{
+  "system": {
+    "system_name": "ai-development-pipeline",
+    "environment": "development",
+    "log_level": "INFO",
+    "timezone": "UTC"
+  },
+  "github": {
+    "repository": "",
+    "default_branch": "main"
+  },
+  "slack": {
+    "channel": ""
+  },
+  "discord": {},
+  "codex": {
+    "model": ""
+  },
+  "fable": {},
+  "monitoring": {}
+}
