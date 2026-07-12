@@ -212,4 +212,4 @@ GitHub Manager/PR Creatorと同じ構図)。これを踏まえ、以下を追加
 | Unit Test | 全882件通過(変更なし) |
 | Ruff / Black | クリーン |
 | リモートpush | 完了(`https://github.com/romyo4/run` の`master`ブランチへpush済み。PATに`workflow`スコープ相当の権限[Workflows: Read and write]が必要だった) |
-| GitHub Actions実行 | **ブロック中**(コード・ワークフロー設定の問題ではなく、GitHubアカウント側の制限により「Unable to enable Actions for this repository」。アカウント制限解除後に再検証予定) |
+| push時のGitHub Actions自動トリガー | **動作確認していない**。GitHubアカウント側の制限により「Unable to enable Actions for this repository」でActions自体が有効化できず、`ci.yml`がpushをトリガーに実際に実行されるかどうかは未検証のまま。コード・ワークフロー設定側の問題ではない。アカウント制限解除後に再検証予定 |
