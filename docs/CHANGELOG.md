@@ -193,3 +193,22 @@ GitHub Manager/PR Creatorと同じ構図)。これを踏まえ、以下を追加
 | Unit Test | 全882件通過(既存877件 + 本フェーズ新規5件) |
 | Ruff / Black | クリーン |
 | 実ネットワーク接続 | **検証済み**(`python -m bootstrap.slack_smoke_test` をユーザー環境で実行し、実Slack Appに対して`OK: Slack auth.test succeeded`を確認。`SLACK_BOT_TOKEN`はBot User OAuth Tokenを使用) |
+
+## v1.4.0 (Phase 2: CI/CD構築)
+
+- **`.github/workflows/ci.yml`**(新規): push(master)・Pull Request時に、Ruffチェック・
+  Blackフォーマットチェック・Unit Test(`unittest discover`)を自動実行するGitHub Actions
+  ワークフローを追加した。ロードマップの方針通り、自動化はテスト/Lintのみに限定し、
+  設計整合性チェック(設計書との矛盾確認)は引き続き人手レビューに委ねる。
+- ローカルでCIと同一のコマンド(`ruff check src tests` / `black --check src tests` /
+  `PYTHONPATH=src python -m unittest discover -s tests -t .`)を実行し、全て成功することを
+  確認済み。ただし本リポジトリはこの時点でGitHubリモートに未接続のため、実際のGitHub Actions
+  実行(push/PRトリガー)自体はまだ検証していない。
+
+### 検証結果
+
+| 項目 | 結果 |
+|---|---|
+| Unit Test | 全882件通過(変更なし) |
+| Ruff / Black | クリーン |
+| GitHub Actions実行 | 未検証(リモートリポジトリ未接続) |
