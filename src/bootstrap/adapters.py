@@ -2,13 +2,18 @@
 
 いずれも既存モジュールのソースコード(design/実装仕様書ではなく実際のsrc/実装)を唯一の
 正として、実際に要求されている属性名に合わせて変換する。2026-07統合レビューで判明した
-以下2件の不整合の是正:
+以下3件の不整合の是正:
 
 1. Planner `ExecutionPlan`(`planner.types`)は`id`属性を持つが、Architect
    `analyzer.py`(および`architect.models.ExecutionPlan` Protocol)は`plan_id`を読む。
 2. Design Auditor `ApprovedDesign`(`design_auditor.types`)は`metadata`属性を持たないが、
    Executor `_validate_approval()`(`executor.executor`)は`getattr(approved_design,
    "metadata", None)`経由で`approval_status`/`design_id`キーを読む。
+3. Notification(M15) `channels.ChannelConnector` Protocolは`send(NotificationMessage)
+   -> Result[bool]`を要求するが、Connector(M21) `SlackDiscordConnector.send()`は
+   `OutboundMessage`を受け取り`Result[DeliveryResult]`を返す、互いに独立したデータ
+   クラスを使う別のシグネチャである。両者を実際に接続する配線(composition root)は
+   どこにも存在しないため、`NotificationChannelConnectorBridge`で変換する。
 """
 
 from __future__ import annotations
@@ -16,13 +21,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from connector.connector import SlackDiscordConnector
+from connector.types import MessageContentType, OutboundMessage, Platform
 from design_auditor.types import ApprovedDesign
+from foundation.result import Result
+from notification.errors import UnsupportedChannelError
+from notification.types import Channel, NotificationMessage
 from planner.types import ExecutionPlan
 
 __all__ = [
     "ArchitectExecutionPlanView",
     "ExecutorApprovedDesignView",
+    "NotificationChannelConnectorBridge",
     "to_architect_execution_plan",
+    "to_connector_outbound_message",
     "to_executor_approved_design",
 ]
 
@@ -98,3 +110,66 @@ def to_executor_approved_design(approved_design: ApprovedDesign) -> ExecutorAppr
             _APPROVED_DESIGN_ID_METADATA_KEY: approved_design.design_id,
         },
     )
+
+
+# Notification(M15) Channel <-> Connector(M21) Platform。Channel.EMAILはConnector(M21)が
+# 対応するプラットフォームではないため、意図的に対応表から除外する(SlackDiscordConnectorの
+# 責務外であり、silent mishandlingを避けるため呼び出し前にエラーとして扱う)。
+_CHANNEL_TO_PLATFORM: dict[Channel, Platform] = {
+    Channel.SLACK: Platform.SLACK,
+    Channel.DISCORD: Platform.DISCORD,
+}
+
+
+def to_connector_outbound_message(message: NotificationMessage) -> Result[OutboundMessage]:
+    """NotificationのNotificationMessageを、ConnectorがそのままSlackDiscordConnector.send()
+    入力として使えるOutboundMessageへ変換する。
+
+    channel_idは`message.recipient`(design/M15 Notification.txt 3.1「recipient」)、
+    text は `message.subject`/`message.body`を結合したもの(design/M15 Notification.txt
+    5章の代表例「PR #152 を作成しました」のようなプレーンテキスト通知)、content_typeは
+    Slack/Discordのプレーンテキスト通知にのみ対応するMVP範囲(design/M15 Notification.txt
+    5章)に合わせ`MessageContentType.TEXT`を用いる。
+    """
+    platform = _CHANNEL_TO_PLATFORM.get(message.channel)
+    if platform is None:
+        return Result(
+            success=False,
+            error=UnsupportedChannelError(f"Connector(M21)が対応していないChannelです: {message.channel.value!r}"),
+        )
+
+    return Result(
+        success=True,
+        value=OutboundMessage(
+            platform=platform,
+            channel_id=message.recipient,
+            content_type=MessageContentType.TEXT,
+            text=f"{message.subject}\n\n{message.body}",
+        ),
+    )
+
+
+@dataclass
+class NotificationChannelConnectorBridge:
+    """Notification `channels.ChannelConnector` Protocolを、Connector(M21)の
+    `SlackDiscordConnector`へ委譲することで満たすブリッジ。
+
+    `to_connector_outbound_message()`でNotificationMessageをOutboundMessageへ変換し、
+    `SlackDiscordConnector.send()`の戻り値(`Result[DeliveryResult]`)の
+    `DeliveryResult.delivered`を`Result[bool]`へ変換して返す。Channel.EMAILは
+    Connector(M21)が対応しないため、`SlackDiscordConnector.send()`を呼び出さずに
+    `UnsupportedChannelError`を返す。
+    """
+
+    connector: SlackDiscordConnector
+
+    def send(self, message: NotificationMessage) -> Result[bool]:
+        outbound_result = to_connector_outbound_message(message)
+        if not outbound_result.success or outbound_result.value is None:
+            return Result(success=False, error=outbound_result.error)
+
+        delivery_result = self.connector.send(outbound_result.value)
+        if not delivery_result.success or delivery_result.value is None:
+            return Result(success=False, error=delivery_result.error)
+
+        return Result(success=True, value=delivery_result.value.delivered)

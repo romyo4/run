@@ -17,16 +17,26 @@ from pathlib import Path
 
 from architect.analyzer import analyze_plan
 from bootstrap.adapters import (
+    NotificationChannelConnectorBridge,
     to_architect_execution_plan,
+    to_connector_outbound_message,
     to_executor_approved_design,
 )
+from connector.connector import SlackDiscordConnector
+from connector.types import DeliveryResult as ConnectorDeliveryResult
+from connector.types import MessageContentType, Platform
 from design_auditor.types import ApprovedDesign
 from executor.executor import Executor
 from executor.models import RepositoryInfo
 from executor.repository_guard import RepositoryGuard
+from foundation.errors import ExternalServiceError
+from foundation.result import Result
 from foundation.types import Design
 from foundation.utils import utc_now
+from notification.errors import UnsupportedChannelError
+from notification.types import Channel, EventType, NotificationMessage
 from planner.types import ExecutionPlan
+from tests.connector.fakes import FakeConfigurationClient, FakeMessageAdapter
 from tests.executor.fakes import FakeCodexAdapter
 
 
@@ -199,6 +209,156 @@ class ToExecutorApprovedDesignTest(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
+
+
+def _make_notification_message(**overrides: object) -> NotificationMessage:
+    defaults: dict[str, object] = dict(
+        workflow_id="wf-001",
+        event_type=EventType.PULL_REQUEST_CREATED,
+        channel=Channel.SLACK,
+        recipient="#dev-notifications",
+        subject="Pull Request Created",
+        body="実装が完了しました。PR #152 を作成しました。",
+        template_id="pull_request_created",
+    )
+    defaults.update(overrides)
+    return NotificationMessage(**defaults)  # type: ignore[arg-type]
+
+
+class ToConnectorOutboundMessageTest(unittest.TestCase):
+    """`to_connector_outbound_message()`が`NotificationMessage`を`OutboundMessage`へ
+    正しく変換することを検証する。"""
+
+    def test_maps_slack_channel_to_slack_platform(self) -> None:
+        message = _make_notification_message(channel=Channel.SLACK)
+
+        result = to_connector_outbound_message(message)
+
+        self.assertTrue(result.success)
+        assert result.value is not None
+        self.assertEqual(result.value.platform, Platform.SLACK)
+
+    def test_maps_discord_channel_to_discord_platform(self) -> None:
+        message = _make_notification_message(channel=Channel.DISCORD)
+
+        result = to_connector_outbound_message(message)
+
+        self.assertTrue(result.success)
+        assert result.value is not None
+        self.assertEqual(result.value.platform, Platform.DISCORD)
+
+    def test_uses_recipient_as_channel_id(self) -> None:
+        message = _make_notification_message(recipient="#dev-notifications")
+
+        result = to_connector_outbound_message(message)
+
+        assert result.value is not None
+        self.assertEqual(result.value.channel_id, "#dev-notifications")
+
+    def test_combines_subject_and_body_as_text_and_defaults_content_type_to_text(self) -> None:
+        message = _make_notification_message(
+            subject="Pull Request Created",
+            body="実装が完了しました。PR #152 を作成しました。",
+        )
+
+        result = to_connector_outbound_message(message)
+
+        assert result.value is not None
+        self.assertEqual(result.value.content_type, MessageContentType.TEXT)
+        self.assertIn("Pull Request Created", result.value.text or "")
+        self.assertIn("PR #152 を作成しました", result.value.text or "")
+
+    def test_returns_unsupported_channel_error_for_email(self) -> None:
+        message = _make_notification_message(channel=Channel.EMAIL)
+
+        result = to_connector_outbound_message(message)
+
+        self.assertFalse(result.success)
+        self.assertIsInstance(result.error, UnsupportedChannelError)
+
+
+class NotificationChannelConnectorBridgeTest(unittest.TestCase):
+    """`NotificationChannelConnectorBridge`が Notification の`ChannelConnector`
+    Protocol(`send(message: NotificationMessage) -> Result[bool]`)を、
+    Connector(M21)の`SlackDiscordConnector`へ委譲することで満たすことを検証する。"""
+
+    @staticmethod
+    def _make_connector(deliver_result: Result[ConnectorDeliveryResult]) -> tuple[SlackDiscordConnector, FakeMessageAdapter]:
+        slack_adapter = FakeMessageAdapter(Platform.SLACK, deliver_result=deliver_result)
+        discord_adapter = FakeMessageAdapter(Platform.DISCORD, deliver_result=deliver_result)
+        connector = SlackDiscordConnector(
+            FakeConfigurationClient(),
+            slack_adapter=slack_adapter,
+            discord_adapter=discord_adapter,
+        )
+        return connector, slack_adapter
+
+    def test_send_returns_true_when_connector_reports_delivered(self) -> None:
+        delivery = ConnectorDeliveryResult(platform=Platform.SLACK, channel_id="#dev-notifications", delivered=True)
+        connector, _ = self._make_connector(Result(success=True, value=delivery))
+        bridge = NotificationChannelConnectorBridge(connector)
+        message = _make_notification_message(channel=Channel.SLACK)
+
+        result = bridge.send(message)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.value)
+
+    def test_send_returns_false_when_connector_reports_not_delivered(self) -> None:
+        delivery = ConnectorDeliveryResult(platform=Platform.SLACK, channel_id="#dev-notifications", delivered=False)
+        connector, _ = self._make_connector(Result(success=True, value=delivery))
+        bridge = NotificationChannelConnectorBridge(connector)
+        message = _make_notification_message(channel=Channel.SLACK)
+
+        result = bridge.send(message)
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.value)
+
+    def test_send_propagates_connector_failure_result(self) -> None:
+        connector, _ = self._make_connector(Result(success=False, error=ExternalServiceError("boom")))
+        bridge = NotificationChannelConnectorBridge(connector)
+        message = _make_notification_message(channel=Channel.SLACK)
+
+        result = bridge.send(message)
+
+        self.assertFalse(result.success)
+        self.assertIsInstance(result.error, ExternalServiceError)
+
+    def test_send_returns_unsupported_channel_error_for_email_without_calling_connector(self) -> None:
+        delivery = ConnectorDeliveryResult(platform=Platform.SLACK, channel_id="x", delivered=True)
+        connector, slack_adapter = self._make_connector(Result(success=True, value=delivery))
+        bridge = NotificationChannelConnectorBridge(connector)
+        message = _make_notification_message(channel=Channel.EMAIL)
+
+        result = bridge.send(message)
+
+        self.assertFalse(result.success)
+        self.assertIsInstance(result.error, UnsupportedChannelError)
+        self.assertEqual(slack_adapter.deliver_calls, [])
+
+    def test_send_delegates_to_real_slack_discord_connector_with_correct_outbound_message(self) -> None:
+        """ボーナス統合テスト: 実際の`SlackDiscordConnector.send()`を呼び出し、
+        Adapterへ渡される`OutboundMessage`の内容を直接検証する。"""
+        delivery = ConnectorDeliveryResult(platform=Platform.SLACK, channel_id="#dev-notifications", delivered=True)
+        connector, slack_adapter = self._make_connector(Result(success=True, value=delivery))
+        bridge = NotificationChannelConnectorBridge(connector)
+        message = _make_notification_message(
+            channel=Channel.SLACK,
+            recipient="#dev-notifications",
+            subject="Pull Request Created",
+            body="実装が完了しました。PR #152 を作成しました。",
+        )
+
+        result = bridge.send(message)
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(slack_adapter.deliver_calls), 1)
+        delivered_message = slack_adapter.deliver_calls[0]
+        self.assertEqual(delivered_message.platform, Platform.SLACK)
+        self.assertEqual(delivered_message.channel_id, "#dev-notifications")
+        self.assertEqual(delivered_message.content_type, MessageContentType.TEXT)
+        self.assertIn("PR #152 を作成しました", delivered_message.text or "")
 
 
 if __name__ == "__main__":
