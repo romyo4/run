@@ -22,6 +22,7 @@ from bootstrap.stub_services import (
     StubFableClient,
     StubHttpClient,
     StubHttpTransport,
+    StubPRCreatorHttpTransport,
 )
 from command_router.router import CommandRouter
 from configuration_manager.manager import ConfigurationManager
@@ -47,6 +48,7 @@ from notification.history import NotificationHistoryStore
 from notification.service import NotificationModule
 from permission_manager.permission_manager import PermissionManager
 from planner.planner import Planner
+from pr_creator.github_client import GitHubPullRequestClient
 from pr_creator.pr_creator import PRCreator
 from reviewer.reviewer import ReviewerModule
 from scheduler.command_router_client import RawCommand
@@ -158,12 +160,20 @@ def build_application() -> Application:
     github_client = GitHubClient(configuration_client=config, transport=StubHttpTransport())
     github_manager = GitHubManager(client=github_client)
 
-    # PRCreator.github_client=Noneは型ヒント上のOptionalかつ意図された既定分岐(遅延解決)。
-    # _resolve_client()はgithub_client未設定時のみconfigからgithub_access_tokenを取得するが、
-    # これはcreate_pr()等の呼び出し時にのみ実行され、construction/health_check()では一切
-    # 参照されない(health_check()は常にResult(True, True)を返す)。よってNoneのままで
-    # 安全に動作する(明示的なGitHubPullRequestClient構築は不要)。
-    pr_creator = PRCreator(configuration_client=config, github_client=None)
+    # PRCreator.github_client: config/default.jsonの`pr_creator.github_access_token`は
+    # 空文字列であり(github_manager.github_access_tokenとは異なりTask 4時点では
+    # プレースホルダ化されていない)、github_client未設定のままだと`_resolve_client()`が
+    # `create_pr()`呼び出し時にConfigurationError("github_access_tokenを取得できません
+    # でした。")を返す(2026-07 Workflow統合時に判明)。トークンをプレースホルダ化するだけでは
+    # `_resolve_client()`がtransport未指定の`GitHubPullRequestClient`(既定=
+    # UrllibHttpTransport、実ネットワーク接続)を構築してしまい、Phase 0の「外部サービスに
+    # 一切接続しない」方針に反するため採用しない。代わりにGitHubManager(M20)と同じ方針で、
+    # スタブHttpTransportを注入した`GitHubPullRequestClient`をここで明示的に構築し、
+    # 遅延解決(_resolve_client()のconfig参照)経路そのものを回避する。
+    pr_creator_github_client = GitHubPullRequestClient(
+        access_token="phase0-stub-token", transport=StubPRCreatorHttpTransport()
+    )
+    pr_creator = PRCreator(configuration_client=config, github_client=pr_creator_github_client)
     reviewer = ReviewerModule(configuration_client=config)
 
     # WeeklyReviewerConfig(src/weekly_reviewer/models.py)は全フィールドに既定値

@@ -16,6 +16,7 @@ from executor.models import GeneratedTest, ImplementationContext, ModifiedFile
 from foundation.logger import get_logger
 from foundation.result import Result
 from github_manager.client import HttpResponse as GitHubHttpResponse
+from pr_creator.github_client import HttpResponse as PRCreatorHttpResponse
 from tester.models import CommandExecutionResult
 from weekly_reviewer.fable_client import FableClient
 from weekly_reviewer.models import (
@@ -62,14 +63,30 @@ class StubCommandExecutor:
     """Tester(M10)のCommandExecutor Protocolに準拠するスタブ。
 
     外部コマンド実行は行わず、常に成功したCommandExecutionResultを返す。
+
+    Unit/Integration/Regression Test用コマンド(TesterConfigの各`*_test_command`。
+    いずれもコマンド名に"test"を含む、`bootstrap.wiring.build_application()`の
+    プレースホルダ規約)に対しては、`tester.runners._parse_case_line()`が解釈できる
+    `name|status|duration_seconds|failure_message`形式で1件のPASSケースを返す。
+    Build/Lint/Static Analysisコマンドはtotal件数を判定に使わない(判定は
+    エラー件数/Critical件数のみ)ため、従来通り汎用の"stub output"のままでよい。
+    (2026-07 Workflow統合時の是正: 従来の"stub output"はいずれのコマンドに対しても
+    テストケースとして解析できず、Unit/Integration/Regression Testが常に
+    `total=0`→`is_pass=False`となり、Quality Gateが恒常的にFAILしていた。)
     """
+
+    _TEST_COMMAND_MARKER = "test"
+    _STUB_PASSING_CASE_LINE = "stub_case|pass|0.01|"
+    _STUB_GENERIC_OUTPUT = "stub output"
 
     def run(self, command: list[str], timeout_seconds: int) -> CommandExecutionResult:
         """外部コマンドを実行する(実装では常に成功)。"""
         _logger.info("stub_command_executor_run command_count=%d", len(command))
+        is_test_command = bool(command) and self._TEST_COMMAND_MARKER in command[0]
+        stdout = self._STUB_PASSING_CASE_LINE if is_test_command else self._STUB_GENERIC_OUTPUT
         return CommandExecutionResult(
             exit_code=0,
-            stdout="stub output",
+            stdout=stdout,
             stderr="",
             duration_seconds=0.1,
         )
@@ -87,6 +104,37 @@ class StubHttpTransport:
         return GitHubHttpResponse(
             status_code=200,
             json_body={"full_name": "stub/repo", "default_branch": "main"},
+        )
+
+
+class StubPRCreatorHttpTransport:
+    """PR Creator(M11) `github_client.HttpTransport` Protocolに準拠するスタブ。
+
+    GitHub REST APIへの実接続は行わず、常に成功するHttpResponseを返す。GitHub Manager
+    (M20)向けの`StubHttpTransport`とはシグネチャ(第4引数が`timeout: float`ではなく
+    `json_body: dict | None`)およびレスポンス型(`github_manager.client.HttpResponse`では
+    なく`pr_creator.github_client.HttpResponse`)が異なるため、流用せず専用のスタブを
+    用意する(`bootstrap.wiring.build_application()`が`PRCreator`へ`github_client`を
+    明示注入する際に使用する。config/default.jsonの`pr_creator.github_access_token`が
+    空文字列のままでも、`PRCreator._resolve_client()`の遅延構築(configからの
+    Access Token取得)経路を通らないため、Phase 0で実際のネットワーク接続が発生しない)。
+    """
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        json_body: dict[str, object] | None = None,
+    ) -> PRCreatorHttpResponse:
+        """HTTP リクエストを実行する(実装では常に成功)。"""
+        _logger.info("stub_pr_creator_http_transport_request method=%s", method)
+        return PRCreatorHttpResponse(
+            status_code=201 if method == "POST" else 200,
+            json_body={
+                "number": 1,
+                "html_url": "https://github.com/stub/repo/pull/1",
+            },
         )
 
 
