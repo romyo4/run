@@ -29,7 +29,7 @@
     "github_access_token": ""
   },
   "github_manager": {
-    "github_access_token": ""
+    "github_access_token": "phase0-stub-token"
   },
   "connector": {
     "slack_bot_token": "",
