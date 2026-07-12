@@ -7,6 +7,7 @@
 import unittest
 
 from bootstrap.wiring import build_application
+from notification.types import Channel
 
 
 class BuildApplicationTest(unittest.TestCase):
@@ -20,6 +21,21 @@ class BuildApplicationTest(unittest.TestCase):
             result = module.health_check()
             self.assertTrue(result.success, msg=f"{module.name()}: {result.error}")
             self.assertTrue(result.value, msg=f"{module.name()} reported unhealthy")
+
+    def test_notification_resolves_channel_connector_for_slack_and_discord(self) -> None:
+        """`NotificationChannelConnectorBridge`がbuild_application()の合成根で実際に
+        NotificationModuleへ渡され、Slack/Discordの両チャネルについて
+        ChannelConnectorが登録されていることを確認する(bootstrap/adapters.pyの
+        NotificationChannelConnectorBridgeが未配線のまま放置されないための回帰テスト)。
+        """
+        app = build_application()
+
+        channel_connectors = app.notification._channel_connectors  # noqa: SLF001 - 配線確認のみ
+
+        self.assertIn(Channel.SLACK, channel_connectors)
+        self.assertIn(Channel.DISCORD, channel_connectors)
+        self.assertIsNotNone(channel_connectors[Channel.SLACK])
+        self.assertIsNotNone(channel_connectors[Channel.DISCORD])
 
 
 if __name__ == "__main__":

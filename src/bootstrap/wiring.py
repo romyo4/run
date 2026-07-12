@@ -1,7 +1,12 @@
-"""21モジュールを依存順に実インスタンス化する配線層本体。
+"""21モジュール(M00〜M21、M18はM03への統合により欠番)のうち、Foundation(M00)
+を除く20モジュールを依存順に実インスタンス化する配線層本体。
 
-依存順序: Foundation(暗黙) → Configuration Manager → 他モジュール(全てconfig
-経由でConfigurationClientを共有) → Cross-module依存を持つモジュール
+Foundation(M00)は全モジュールが依存する共通基盤(`BaseModule`/`Result[T]`等の
+Common Interface)であり、それ自体が実行時にインスタンス化されるコンポーネントでは
+ないため、`Application`/`Application.all_modules()`には含まれない。
+
+依存順序: Foundation(暗黙、共通基盤として利用) → Configuration Manager → 他モジュール
+(全てconfig経由でConfigurationClientを共有) → Cross-module依存を持つモジュール
 (Context Manager, GitHub Manager経由のPR Creator/Connector、Command Router経由の
 Scheduler等)。
 
@@ -15,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from architect.module import ArchitectModule
+from bootstrap.adapters import NotificationChannelConnectorBridge
 from bootstrap.config import build_configuration_manager
 from bootstrap.stub_services import (
     StubCodexAdapter,
@@ -46,6 +52,7 @@ from monitoring.monitoring_module import MonitoringModule
 from monitoring.reporter import ReportGenerator
 from notification.history import NotificationHistoryStore
 from notification.service import NotificationModule
+from notification.types import Channel
 from permission_manager.permission_manager import PermissionManager
 from planner.planner import Planner
 from pr_creator.github_client import GitHubPullRequestClient
@@ -78,7 +85,12 @@ class _CommandRouterClientAdapter:
 
 @dataclass
 class Application:
-    """21モジュール全ての実インスタンスを束ねる。"""
+    """21モジュールのうちFoundation(M00)を除く20モジュールの実インスタンスを束ねる。
+
+    Foundationは全モジュールが依存する共通基盤であり、それ自体は実行時に
+    インスタンス化されるコンポーネントではないため、フィールド・
+    `all_modules()`のいずれにも含まれない。
+    """
 
     configuration_manager: ConfigurationManager
     state_manager: StateManager
@@ -201,9 +213,18 @@ def build_application() -> Application:
         discord_adapter=DiscordAdapter(config_client=config, http_client=StubHttpClient()),
     )
 
+    # Notification(M15) ChannelConnector Protocolと Connector(M21) SlackDiscordConnector
+    # の実際のシグネチャ差(send()の引数型・戻り値型)は、bootstrap/adapters.py
+    # NotificationChannelConnectorBridgeが吸収する。to_connector_outbound_message()が
+    # メッセージ単位でChannel→Platformを解決するため、Slack/Discordの両チャネルを
+    # 単一のbridgeインスタンスで賄える(チャネルごとに別インスタンスを用意する必要はない)。
+    notification_connector_bridge = NotificationChannelConnectorBridge(connector)
     notification = NotificationModule(
         config_client=config,
-        channel_connectors={},
+        channel_connectors={
+            Channel.SLACK: notification_connector_bridge,
+            Channel.DISCORD: notification_connector_bridge,
+        },
         history_store=NotificationHistoryStore(),
     )
 

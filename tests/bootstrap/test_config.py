@@ -37,6 +37,12 @@ class BuildConfigurationManagerTest(unittest.TestCase):
         self.assertTrue(result.success, msg=result.error)
 
     # --- pr_creator (src/pr_creator/pr_creator.py:464) ---
+    # 注: このキーは`ConfigurationManager`経由のキー解決自体をカバーするために維持している。
+    # Task 5(bootstrap/wiring.py::build_application())以降、PRCreatorには
+    # StubHttpTransportを注入した`GitHubPullRequestClient`を明示的に構築して渡しており、
+    # `PRCreator._resolve_client()`のconfig参照経路(このキー)は実行時には通らない
+    # (Phase 1で外部サービス接続を実装する際に再利用される想定のため、キー・テストとも
+    # 削除しない)。
     def test_pr_creator_github_access_token_resolves(self) -> None:
         manager = build_configuration_manager()
         manager.load(manager._source)  # noqa: SLF001
