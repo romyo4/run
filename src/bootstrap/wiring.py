@@ -16,6 +16,7 @@ Scheduler等)。
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -138,8 +139,24 @@ class Application:
         ]
 
 
-def build_application() -> Application:
-    config = build_configuration_manager()
+def build_application(*, use_real_github: bool = False) -> Application:
+    """21モジュール(Foundationを除く20モジュール)を配線した`Application`を返す。
+
+    `use_real_github=True`の場合、GitHub Manager(M20)はスタブHttpTransportではなく
+    実際のGitHub REST API(標準ライブラリ`urllib`のみを用いる`UrllibHttpTransport`、
+    `src/github_manager/client.py`に既存)へ接続する。トークンは環境変数`GITHUB_TOKEN`
+    からのみ取得し(値そのものをコード・設定ファイルに書き込まない)、未設定の場合は
+    `RuntimeError`を送出する。GitHub Managerは設計上Read Onlyのみ(3.5節)であり、
+    PR Creator(書き込み経路)は本フラグの対象外(引き続きスタブのまま)。
+    """
+    startup_parameters: dict[str, str] = {}
+    if use_real_github:
+        github_token = os.environ.get("GITHUB_TOKEN", "")
+        if not github_token:
+            raise RuntimeError("use_real_github=True の場合、環境変数 GITHUB_TOKEN の設定が必要です。")
+        startup_parameters["github_manager.github_access_token"] = github_token
+
+    config = build_configuration_manager(startup_parameters=startup_parameters)
     load_result = config.load(
         config._source
     )  # noqa: SLF001 - 初回load(build_configuration_manager()はunloaded状態で返す仕様)
@@ -169,7 +186,12 @@ def build_application() -> Application:
     )
     tester = Tester(config=tester_config, logger=get_logger("tester"), command_executor=StubCommandExecutor())
 
-    github_client = GitHubClient(configuration_client=config, transport=StubHttpTransport())
+    if use_real_github:
+        # transport省略時はGitHubClientの既定実装(標準ライブラリ`urllib`のみを用いる
+        # UrllibHttpTransport)が使われ、実際のGitHub REST APIへ接続する。
+        github_client = GitHubClient(configuration_client=config)
+    else:
+        github_client = GitHubClient(configuration_client=config, transport=StubHttpTransport())
     github_manager = GitHubManager(client=github_client)
 
     # PRCreator.github_client: config/default.jsonの`pr_creator.github_access_token`は

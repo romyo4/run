@@ -5,8 +5,10 @@
 """
 
 import unittest
+from unittest.mock import patch
 
 from bootstrap.wiring import build_application
+from github_manager.client import UrllibHttpTransport
 from notification.types import Channel
 
 
@@ -36,6 +38,32 @@ class BuildApplicationTest(unittest.TestCase):
         self.assertIn(Channel.DISCORD, channel_connectors)
         self.assertIsNotNone(channel_connectors[Channel.SLACK])
         self.assertIsNotNone(channel_connectors[Channel.DISCORD])
+
+
+class UseRealGithubTest(unittest.TestCase):
+    """Phase 1-A: `use_real_github=True`時にGitHub Managerが実HttpTransport
+    (`UrllibHttpTransport`)で構築され、`GITHUB_TOKEN`環境変数から認証情報を
+    取得することを確認する(実際のネットワーク呼び出しは行わない)。"""
+
+    def test_default_wiring_uses_stub_transport(self) -> None:
+        app = build_application()
+
+        transport = app.github_manager._client._transport  # noqa: SLF001 - 配線確認のみ
+
+        self.assertNotIsInstance(transport, UrllibHttpTransport)
+
+    @patch.dict("os.environ", {"GITHUB_TOKEN": "test-token-value"}, clear=False)
+    def test_use_real_github_wires_urllib_transport(self) -> None:
+        app = build_application(use_real_github=True)
+
+        transport = app.github_manager._client._transport  # noqa: SLF001 - 配線確認のみ
+
+        self.assertIsInstance(transport, UrllibHttpTransport)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_use_real_github_without_token_raises_runtime_error(self) -> None:
+        with self.assertRaises(RuntimeError):
+            build_application(use_real_github=True)
 
 
 if __name__ == "__main__":
