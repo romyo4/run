@@ -17,9 +17,28 @@ from bootstrap.adapters import (
 from bootstrap.wiring import build_application
 from bootstrap.workflow import run_workflow
 from executor.models import RepositoryInfo
+from foundation.errors import ExternalServiceError
+from foundation.result import Result
+from notification.types import EventType, NotificationEvent, NotificationMessage
 from planner.types import NormalizedRequest
 from pr_creator.models import BranchInformation, CreatePullRequestInput, RepositoryInformation
 from reviewer.domain import ReviewDecision
+
+
+class _AlwaysFailingNotificationModule:
+    """`app.notification`と同じ公開メソッド(create_message/send/publish)のみを持つ
+    フェイク。`create_message()`が常に失敗を返すことで、Notification配信失敗時にも
+    `run_workflow()`のワークフロー結果が影響を受けない(失敗許容の契約)ことを検証する。
+    """
+
+    def create_message(self, event: NotificationEvent) -> Result[NotificationMessage]:
+        return Result(success=False, error=ExternalServiceError("forced failure"))
+
+    def send(self, message: NotificationMessage) -> Result[object]:
+        raise AssertionError("create_messageが失敗した時点でsend()は呼ばれないはず")
+
+    def publish(self, delivery_result: object) -> Result[object]:
+        raise AssertionError("create_messageが失敗した時点でpublish()は呼ばれないはず")
 
 
 class RunWorkflowTest(unittest.TestCase):
@@ -53,10 +72,37 @@ class RunWorkflowTest(unittest.TestCase):
         self.assertTrue(result.success, msg=str(result.error))
         histories_result = app.notification._history_store.list_all()  # noqa: SLF001 - 配信確認のみ
         self.assertTrue(histories_result.success)
+        matching_histories = [h for h in histories_result.value if h.workflow_id == "wf-bootstrap-notify"]
         self.assertTrue(
-            any(h.workflow_id == "wf-bootstrap-notify" for h in histories_result.value),
+            matching_histories,
             msg="review_completed通知がNotificationHistoryStoreに記録されていない",
         )
+        self.assertTrue(
+            any(h.event_type == EventType.REVIEW_COMPLETED for h in matching_histories),
+            msg="記録されたNotificationHistoryのevent_typeがREVIEW_COMPLETEDでない",
+        )
+
+    def test_notification_failure_does_not_fail_workflow_result(self) -> None:
+        """通知配信(create_message)が失敗しても、`run_workflow()`自体の結果
+        (`Result[ReviewOutcome]`)には一切影響しない(失敗許容の契約、
+        `bootstrap.workflow._notify_review_completed`のdocstring参照)ことを検証する。
+        """
+        app = build_application()
+        app.notification = _AlwaysFailingNotificationModule()
+        request = NormalizedRequest(
+            workflow_id="wf-bootstrap-notify-failure",
+            command="LP改善",
+            request_text="LPの登録導線を改善してください。既存のデザインは維持すること。",
+        )
+
+        result = run_workflow(app, request, business_goal="LINE登録数最大化")
+
+        self.assertTrue(result.success, msg=str(result.error))
+        self.assertIsNotNone(result.value)
+        outcome = result.value
+        self.assertIsInstance(outcome.decision, ReviewDecision)
+        self.assertIn(outcome.next_module, ("merge_manager", "executor"))
+        self.assertTrue(outcome.review_id)
 
 
 class RunWorkflowPrBodyTest(unittest.TestCase):
